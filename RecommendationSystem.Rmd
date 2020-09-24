@@ -1,0 +1,176 @@
+---
+title: "Reccomendation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(RMySQL)
+library(dplyr)
+library(ggplot2)
+library(raster)
+library(conflicted)
+library(knitr)
+library(recommenderlab)
+library(data.table)
+library(matrixStats)
+library(normalr)
+library(convertr)
+library(stringr)
+library(gsubfn)
+```
+
+```{r}
+mydb<-dbConnect(MySQL(),user='root',dbname='yorumlar',host='localhost' )
+dbListTables(mydb)
+rs1<-dbSendQuery(mydb,"select*from books")
+
+books<-fetch(rs1,n=-1)
+books
+
+```
+```{r}
+
+rs2<-dbSendQuery(mydb,"select*from person")
+
+person<-fetch(rs2,n=-1)
+person
+```
+```{r}
+rs3<-dbSendQuery(mydb,"select*from comment")
+comment<-fetch(rs3,n=-1)
+comment
+```
+```{r}
+
+vector_rating<-as.vector(comment$rating)
+View(vector_rating)
+```
+```{r}
+#just_name<-as.vector(person$name)
+#head(names(colCounts(just_name)))
+#m_person <-Matrix::as.matrix(person) 
+#head(names(colCounts(m_person)))
+View(person)
+View(books)
+View(comment)
+dim(as.data.frame(vector_rating))
+```
+
+
+```{r}
+kable(table(vector_rating),caption="Rating Freq.")
+```
+```{r}
+hist(vector_rating,main="Histogram Of Rating",xlab="Rating Value",breaks=20,col="pink")
+```
+```{r}
+m_rating <-as.vector(comment$rating) 
+m_book<-as.vector(comment$book)
+User <-as.vector(comment$Id)
+
+m_comment<-cbind(User,m_book,m_rating)
+
+com<-as.data.frame(m_comment,stringsAsFactors=FALSE)
+
+data<-reshape(com, idvar = "User", timevar = "m_book", direction = "wide")
+data[is.na(data)]<-0
+data
+
+```
+
+
+```{r}
+data <- data %>% mutate_all(as.numeric) %>% as_tibble()
+
+data<-tbl_df(data)
+#create a copy of rating dataframe
+data.normalized<-data[FALSE,]
+
+##normalize user rating
+for (u in 1:nrow(data)) {
+  #get rating of the user for each item
+  ratings <-as.numeric(data[u,-1])
+  #calculate average rating
+  meanAvg <- mean(ratings[ratings!=0])
+  
+  #iterate each user ratings.
+  # we start with 2nd column as first column is user id
+  for (j in 2:ncol(data)) {
+    #store user id in normalized dataframe
+    data.normalized[u,1]<-data[u,1]
+    
+    #store zero incase of no rating
+    if(data[u,j]==0){
+      data.normalized[u,j] <- 0
+    }
+    #subtract user's item rating with average rating.
+    else{
+      data.normalized[u,j] <- data[u,j] - meanAvg
+    }
+    
+  }
+  
+}
+
+#view normalized ratings
+#View(data.normalized)
+#convert data frame d(without user ids) to matrix
+data.ibs<-data[,-1]
+#stor user ids as row names of the rating matrix
+data.ibs.matrix <- proxy::as.matrix(data.ibs)
+
+#stor user ids as row names of the rating matrix
+rownames(data.ibs.matrix) <- data$User
+
+#convert matrix to realRatingMatrix
+ratingMatrix <- as(data.ibs.matrix,"realRatingMatrix")
+
+```
+
+```{r}
+#Item Based
+e <- evaluationScheme(ratingMatrix, method="split", train=0.8, given=5, goodRating=3)
+
+IBCF_Z_P <- Recommender(recommenderlab::getData(e, "train"), "IBCF",
+                        param=base::list(normalize = NULL ,method="cosine"))
+p <- predict(IBCF_Z_P,recommenderlab::getData(e, "unknown"), type="topNList", n=10)
+
+Item_Based<-as(p,"list")
+Item_Based
+```
+```{r}
+#User Based
+UBCF_Z_P <- Recommender(recommenderlab::getData(e, "train"), "UBCF",
+                        param=base::list(normalize = NULL ,method="cosine"))
+zz <- predict(UBCF_Z_P,recommenderlab::getData(e, "unknown"), type="topNList", n=10)
+
+User_Based<-as(zz,"list")
+User_Based
+
+```
+
+```{r}
+a<-gsub('[[:punct:] ]+',' ',User_Based)
+a<-gsub('c m rating ', '', a)
+a<-gsub('m rating ', ',', a)
+
+
+for (i in 1:6) {
+  query <- paste0("INSERT INTO ub VALUES('0', '", a[i],"')")
+  dbSendQuery(mydb, query)
+}
+
+```
+```{r}
+b<-gsub('[[:punct:] ]+',' ',Item_Based)
+b<-gsub('c m rating ', '', b)
+b<-gsub('m rating ', ',', b)
+
+
+for (i in 1:6) {
+  query <- paste0("INSERT INTO ib VALUES('0', '", b[i],"')")
+  dbSendQuery(mydb, query)
+}
+
+```
+
